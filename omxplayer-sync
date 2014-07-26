@@ -24,9 +24,10 @@ import threading
 from time import sleep, time
 from optparse import OptionParser, BadOptionError, AmbiguousOptionError
 
+SYNC_WINDOW_START = -0.3
+TOLERANCE = 0.2
+
 PORT = 1666
-TOLERANCE = 0.25
-SYNC_WINDOW = (-0.30, -0.25)
 OMXPLAYER = 'omxplayer'
 OMXPLAYER_REGEX_STATUS = re.compile(r"M:\s*(\d+) ")
 OMXPLAYER_REGEX_DONE = re.compile(r"have a nice day.*")
@@ -116,6 +117,8 @@ class OMXPlayerSync():
         self.filename_master = ''
         self.process = None
         self.first_run = True
+        self.first_sync = True
+        self.sync_window_offsets = {}
 
         signal.signal(signal.SIGINT, self.kill_omxplayer_and_exit)
 
@@ -162,6 +165,7 @@ class OMXPlayerSync():
         if self.options.master:
             sleep(0.05)
 
+        self.first_sync = True
         self.filename = filename
         self.position_local = 0.0
         self.position_local_oldage = 0.0
@@ -177,6 +181,7 @@ class OMXPlayerSync():
             wait_for_sync = False
             wait_after_sync = True
             deviations = collections.deque(maxlen=50)
+            
 
         while True:
             if not self.read_position_local():
@@ -186,6 +191,7 @@ class OMXPlayerSync():
             if self.hangup_detected():
                 if self.options.slave:
                     self.set_playlist_index()
+
                 print "WARNING: omxplayer hangup detected, respawning omxplayer"
                 break
 
@@ -210,10 +216,14 @@ class OMXPlayerSync():
 
                 if wait_for_sync:
                     small_moving_deviation = sum(list(deviations)[-5:]) / float(len(list(deviations)[-5:]))
-                    if small_moving_deviation >= SYNC_WINDOW[0] \
-                    and small_moving_deviation < SYNC_WINDOW[1]:
+                    sync_window_start = SYNC_WINDOW_START
+                    if self.filename in self.sync_window_offsets:
+                        sync_window_start -= self.sync_window_offsets[self.filename] 
+                    if small_moving_deviation >= sync_window_start \
+                    and small_moving_deviation < sync_window_start + 0.5 :
                         if self.options.verbose:
                             print "we are sync, play..."
+
                         if not self.controller.playPause():
                             break
 
@@ -232,6 +242,8 @@ class OMXPlayerSync():
                 and self.position_local > sync_grace_time \
                 and self.position_master > sync_grace_time:
                     if self.position_local < self.position_master:
+                        if not self.first_sync:
+                            self.sync_window_offsets[self.filename] = moving_deviation
                         if self.options.verbose:
                             print "jump to %.2f" % (self.position_master + 2)
                         if not self.controller.setPosition(self.position_master + 2):
@@ -276,6 +288,7 @@ class OMXPlayerSync():
         if self.position_local_oldage_count == 200:
             if self.position_local_oldage == self.position_local:
                 return True
+
             self.position_local_oldage = self.position_local
             self.position_local_oldage_count = 0
 
